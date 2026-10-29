@@ -24,7 +24,7 @@ A production-ready deep learning application and interactive **Streamlit** web a
    - Built-in Gradient-weighted Class Activation Mapping (Grad-CAM) highlighting the exact pigment networks and lesion borders the neural network focused on.
 
 4. **Integrated Model Performance & Evaluation Dashboard**:
-   - **Real-time Evaluation Metrics:** Validation Accuracy (`60.7%`), Macro Precision (`61.4%`), Validation Loss (`1.34`), and Macro F1 (`60.7%`).
+   - **Real-time Evaluation Metrics:** Validation Accuracy (**`70.2%`**), Balanced Accuracy (**`70.3%`**), TTA Accuracy (**`71.5%`**), and Validation Loss (**`0.83`**).
    - **Interactive Confusion Matrix:** Color-coded matrix showing true vs. predicted counts across all 7 classes.
    - **Per-Class Metrics Table:** Granular precision, recall/sensitivity, F1-score, and support metrics.
    - **Learning Curves:** Plotly convergence charts displaying loss and accuracy across training epochs.
