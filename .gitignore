@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 data/raw/
+data/cache_224/
 data/processed/*.csv
 models/*.pth
 !models/best_model.pth

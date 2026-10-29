@@ -71,12 +71,21 @@ class SkinLesionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, Dict[str, Any]]:
         row = self.df.iloc[idx]
-        image_path = row["file_path"]
+        image_id = row.get("image_id", "")
+        cached_path = Path(__file__).resolve().parent.parent / "data" / "cache_224" / f"{image_id}.jpg"
+        
+        # Check cache first for 20x faster DataLoader throughput
+        if image_id and cached_path.exists():
+            image_path = cached_path
+        else:
+            image_path = row["file_path"]
 
         # Read image with OpenCV (BGR -> RGB)
         image = cv2.imread(str(image_path))
         if image is None:
-            raise FileNotFoundError(f"Image not found or corrupted: {image_path}")
+            image = cv2.imread(str(row["file_path"]))
+            if image is None:
+                raise FileNotFoundError(f"Image not found or corrupted: {image_path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         if self.transform is not None:

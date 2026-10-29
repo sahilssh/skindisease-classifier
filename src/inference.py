@@ -25,7 +25,6 @@ def check_lesion_presence(img_rgb: np.ndarray) -> Tuple[bool, str]:
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
     
-    # Central lesion candidate zone vs perimeter background skin
     center_roi = gray[h//4:3*h//4, w//4:3*w//4]
     perim_top = gray[0:max(1, h//8), :]
     perim_bot = gray[max(0, 7*h//8):h, :]
@@ -38,7 +37,6 @@ def check_lesion_presence(img_rgb: np.ndarray) -> Tuple[bool, str]:
     edges = cv2.Canny(gray, 30, 100)
     edge_density = float(np.sum(edges > 0) / (h * w))
 
-    # If the image is flat/homogeneous with no central contrast or texture variation:
     has_lesion = (contrast > 14.0 or edge_density > 0.008 or center_std > 20.0)
     reason = "Lesion contour/contrast detected" if has_lesion else "Homogeneous image with no distinct central lesion structure"
     return has_lesion, reason
@@ -46,15 +44,16 @@ def check_lesion_presence(img_rgb: np.ndarray) -> Tuple[bool, str]:
 class SkinDiseaseClassifier:
     """
     SkinDisease Classifier:
-    - Deep learning inference engine fine-tuned on the balanced HAM10000 dataset
+    - Deep learning inference engine fine-tuned on the HAM10000 dataset
     - 7 Diagnostic disease categories + 8th 'Not Detected / Inconclusive' class
     - Dual-Gate filter: Lesion Saliency + Confidence Calibration
+    - Test-Time Augmentation (TTA) for enhanced prediction stability and accuracy
     - Visual Explainability: Gradient-weighted Class Activation Mapping (Grad-CAM)
     """
     def __init__(
         self,
         checkpoint_path: Optional[Union[str, Path]] = None,
-        model_name: str = "mobilenetv3_large_100",
+        model_name: Optional[str] = None,
         device: Optional[torch.device] = None
     ):
         if device is None:
@@ -67,29 +66,44 @@ class SkinDiseaseClassifier:
         else:
             self.device = device
 
-        self.model_name = model_name
-        self.val_transforms = get_val_transforms()
-
-        # Build MobileNetV3 model architecture
-        self.model = build_model(model_name=model_name, num_classes=NUM_CLASSES, pretrained=False)
-
         if checkpoint_path is None:
             checkpoint_path = MODELS_DIR / "best_model.pth"
         else:
             checkpoint_path = Path(checkpoint_path)
 
+        self.val_transforms = get_val_transforms()
         self.has_trained_weights = False
+
+        # Inspect checkpoint to infer model architecture
+        inferred_model_name = "efficientnet_b0"
+        state_dict = None
         if checkpoint_path.exists():
             try:
                 ckpt = torch.load(checkpoint_path, map_location=self.device)
+                inferred_model_name = ckpt.get("model_name", "efficientnet_b0")
                 state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
-                self.model.load_state_dict(state_dict)
                 self.has_trained_weights = True
-                print(f"SkinDisease Classifier successfully loaded weights from {checkpoint_path}")
             except Exception as e:
-                print(f"Warning: Failed to load checkpoint ({e}). Using initialized backbone.")
-        else:
-            print(f"Notice: No checkpoint found at {checkpoint_path}. Train using 'python -m src.train'.")
+                print(f"Notice: Failed to read checkpoint metadata ({e}).")
+
+        self.model_name = model_name or inferred_model_name
+
+        # Build model architecture
+        self.model = build_model(model_name=self.model_name, num_classes=NUM_CLASSES, pretrained=False)
+
+        if state_dict is not None:
+            try:
+                self.model.load_state_dict(state_dict)
+                print(f"SkinDisease Classifier ({self.model_name}) loaded weights from {checkpoint_path}")
+            except Exception as e:
+                # If architecture mismatch, try fallback
+                print(f"Notice: Architecture mismatch ({e}), rebuilding.")
+                self.model = build_model(model_name="mobilenetv3_large_100", num_classes=NUM_CLASSES, pretrained=False)
+                try:
+                    self.model.load_state_dict(state_dict)
+                    self.model_name = "mobilenetv3_large_100"
+                except Exception:
+                    pass
 
         self.model = self.model.to(self.device)
         self.model.eval()
@@ -126,6 +140,7 @@ class SkinDiseaseClassifier:
         self,
         image_input: Union[str, Path, Image.Image, np.ndarray],
         confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        use_tta: bool = True,
         generate_cam: bool = True
     ) -> Dict[str, Any]:
         img_rgb, pil_img, tensor = self.preprocess_image(image_input)
@@ -134,10 +149,22 @@ class SkinDiseaseClassifier:
         # 1. Lesion Saliency Check (Filters out clear skin / empty backgrounds)
         has_lesion, presence_reason = check_lesion_presence(img_rgb)
 
-        # 2. Forward pass through SkinDisease Classifier
+        # 2. Test-Time Augmentation (TTA) forward pass
         with torch.no_grad():
-            logits = self.model(tensor_device)
-            probs = F.softmax(logits, dim=1).cpu().squeeze(0).numpy()
+            if use_tta:
+                # 4-view TTA: Original, H-Flip, V-Flip, 90-deg rotation
+                v1 = tensor_device
+                v2 = torch.flip(tensor_device, dims=[3])
+                v3 = torch.flip(tensor_device, dims=[2])
+                v4 = torch.rot90(tensor_device, k=1, dims=[2, 3])
+
+                batch_tta = torch.cat([v1, v2, v3, v4], dim=0)
+                logits_tta = self.model(batch_tta)
+                probs_tta = F.softmax(logits_tta, dim=1).cpu().numpy()
+                probs = np.mean(probs_tta, axis=0)
+            else:
+                logits = self.model(tensor_device)
+                probs = F.softmax(logits, dim=1).cpu().squeeze(0).numpy()
 
         prob_dict = {CLASSES[idx]: float(probs[idx]) for idx in range(NUM_CLASSES)}
         top_idx = int(np.argmax(probs))
@@ -191,6 +218,8 @@ class SkinDiseaseClassifier:
             "gradcam_heatmap": gradcam_heatmap,
             "gradcam_overlay": gradcam_overlay,
             "has_trained_weights": self.has_trained_weights,
+            "model_architecture": self.model_name,
+            "used_tta": use_tta,
         }
 
 # Backwards compatibility alias

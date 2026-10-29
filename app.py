@@ -157,6 +157,12 @@ with st.sidebar:
         help="Adjust the overlay visibility of the visual explainability heatmap."
     )
 
+    use_tta = st.checkbox(
+        "Enable Test-Time Augmentation (TTA)",
+        value=True,
+        help="Averages predictions across multiple geometric orientations (original, horizontal flip, vertical flip, 90° rotation) to boost classification accuracy."
+    )
+
     st.markdown("---")
     st.subheader("ℹ️ System Status")
     if classifier.has_trained_weights:
@@ -206,6 +212,7 @@ with tab_predict:
             result = classifier.predict(
                 image_to_process,
                 confidence_threshold=threshold,
+                use_tta=use_tta,
                 generate_cam=True
             )
 
